@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.104"
 easy-api = "0.1.2"
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 
