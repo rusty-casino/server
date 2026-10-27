@@ -1,4 +1,3 @@
-//use anyhow::Ok;
 use rusqlite::{params, Connection, Result};
 
 pub struct Database {
@@ -16,7 +15,7 @@ impl Database {
             CREATE TABLE IF NOT EXISTS players (
                 id       INTEGER PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE,
-                balance  INTEGER NOT NULL DEFAULT 1000
+                balance  INTEGER NOT NULL DEFAULT 10000
                          CHECK (balance >= 0)
             );
 
@@ -45,8 +44,16 @@ impl Database {
         Ok(Self { connection })
     }
 
-    pub fn new_transaction(&self, id: i64, ) {
-        
+    pub fn payout_bet(&self, bet_id: i64, win: bool) {
+        if !win {
+            self.connection.execute("UPDATE bets SET status = 'lost' WHERE id = ?1", [bet_id]);
+            return;
+        }
+        self.connection.query_row(
+            "SELECT username FROM players WHERE id = ?1",
+            [bet_id],
+            |row| row.get(0),
+        );
     }
 
     pub fn create_player(&self, name: &str) -> Result<i64> {
