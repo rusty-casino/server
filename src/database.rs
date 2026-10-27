@@ -19,30 +19,27 @@ impl Database {
                          CHECK (balance >= 0)
             );
 
-            CREATE TABLE games (
+            CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
-                market_id 
                 name TEXT NOT NULL UNIQUE,
                 game_type TEXT NOT NULL UNIQUE,
                 status TEXT NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'disabled'))
             );
 
-            CREATE TABLE rounds (
+            CREATE TABLE IF NOT EXISTS rounds (
                 id INTEGER PRIMARY KEY,
-                game_id INTEGER NOT NULL REFERENCES games(id),
+                game_id INTEGER NOT NULL REFERENCES games(id)
+                    ON DELETE RESTRICT,
                 status TEXT NOT NULL DEFAULT 'in_progress'
                     CHECK (status IN (
                         'in_progress', 'finished', 'cancelled'
                     )),
                 result TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-                FOREIGN KEY (game_id) REFERENCES games(id)
-                    ON DELETE RESTRICT
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             
-            CREATE TABLE markets (
+            CREATE TABLE IF NOT EXISTS markets (
                 id INTEGER PRIMARY KEY,
                 game_id INTEGER NOT NULL REFERENCES games(id)
                     ON DELETE RESTRICT,
@@ -71,7 +68,7 @@ impl Database {
                 bet_id       INTEGER REFERENCES bets(id),
                 amount       INTEGER NOT NULL,
                 type         TEXT NOT NULL,
-                created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             ",
         )?;
@@ -79,8 +76,22 @@ impl Database {
         Ok(Self { connection })
     }
 
-    pub fn place_bet(&mut self) {
-        
+    pub fn place_bet(&mut self, player_id: i64, market_id: i64, wager: i64) -> Result<(), Box<dyn std::error::Error>> {
+        let tx = self.connection.transaction()?;
+        let (game_id, bet_on, game_name): (i64, String, String) = tx.query_row(
+            "SELECT m.game_id, m.selection, g.name FROM markets m JOIN games g ON m.game_id = g.id WHERE m.id = ?1",
+            params![market_id], |row| { Ok(( row.get(0)?, row.get(1)?, row.get(2)? )) }
+        )?;
+        tx.execute("INSERT INTO rounds (game_id) VALUES (?1)", params![game_id])?;
+        let round_id = tx.last_insert_rowid();
+        tx.execute("INSERT INTO bets (player_id, market_id, round_id, game, amount) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![player_id, market_id, round_id, game_name, wager]
+        )?;
+        let bet_id = tx.last_insert_rowid();
+        let transact_type = format!("Wager for Game: /{}/ for a bet on /{}/", game_name, bet_on);
+        Self::transact(&tx, player_id, bet_id, -wager, &transact_type)?;
+        tx.commit()?;
+        Ok(())
     } 
 
     pub fn transact(tx: &Transaction<'_>, player_id: i64, bet_id: i64, amount: i64, t_type: &str) -> Result<(), Box<dyn std::error::Error>> {
