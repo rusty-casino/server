@@ -3,8 +3,14 @@ use easy_api;
 mod database;
 use database::Database;
 
+mod games;
+
 fn works() {
     println!("It works")
+}
+
+fn game_wrapper() {
+    
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

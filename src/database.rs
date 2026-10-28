@@ -76,25 +76,21 @@ impl Database {
         Ok(Self { connection })
     }
 
-    pub fn place_bet(&mut self, player_id: i64, market_id: i64, wager: i64) -> Result<(), Box<dyn std::error::Error>> {
-        let tx = self.connection.transaction()?;
-        let (game_id, bet_on, game_name): (i64, String, String) = tx.query_row(
-            "SELECT m.game_id, m.selection, g.name FROM markets m JOIN games g ON m.game_id = g.id WHERE m.id = ?1",
-            params![market_id], |row| { Ok(( row.get(0)?, row.get(1)?, row.get(2)? )) }
-        )?;
-        tx.execute("INSERT INTO rounds (game_id) VALUES (?1)", params![game_id])?;
-        let round_id = tx.last_insert_rowid();
-        tx.execute("INSERT INTO bets (player_id, market_id, round_id, game, amount) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![player_id, market_id, round_id, game_name, wager]
-        )?;
-        let bet_id = tx.last_insert_rowid();
-        let transact_type = format!("Wager for Game: /{}/ for a bet on /{}/", game_name, bet_on);
-        Self::transact(&tx, player_id, bet_id, -wager, &transact_type)?;
-        tx.commit()?;
-        Ok(())
-    } 
+    fn calculate_payout(wager: i64, odds: f64) -> Result<i64> {
+        if wager <= 0 || !odds.is_finite() || odds <= 1.0 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
 
-    pub fn transact(tx: &Transaction<'_>, player_id: i64, bet_id: i64, amount: i64, t_type: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let payout = (wager as f64) * odds;
+
+        if !payout.is_finite() || payout > i64::MAX as f64 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+
+        Ok(payout.floor() as i64)
+    }
+    
+    fn transact(tx: &Transaction<'_>, player_id: i64, bet_id: i64, amount: i64, t_type: &str) -> Result<(), Box<dyn std::error::Error>> {
         tx.execute("INSERT INTO transactions (player_id, bet_id, amount, type) VALUES (?1, ?2, ?3, ?4)", params![player_id, bet_id, amount, t_type])?;
         let updated = tx.execute("UPDATE players SET balance = balance + ?1 WHERE id = ?2 AND balance + ?1 >= 0", params![amount, player_id])?;
         if updated != 1 {
@@ -102,6 +98,29 @@ impl Database {
         }
         Ok(())
     }
+
+    pub fn place_bet(&mut self, player_id: i64, market_id: i64, wager: i64) -> Result<(), Box<dyn std::error::Error>> {
+        if wager <= 0 {
+            return Err("Wager must be positive".into());
+        }
+
+        let tx = self.connection.transaction()?;
+        let (game_id, bet_on, odds, game_name): (i64, String, f64, String) = tx.query_row(
+            "SELECT m.game_id, m.selection, m.odds, g.name FROM markets m JOIN games g ON m.game_id = g.id WHERE m.id = ?1 AND game.status = 'active'",
+            params![market_id], |row| { Ok(( row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)? )) }
+        )?;
+        tx.execute("INSERT INTO rounds (game_id) VALUES (?1)", params![game_id])?;
+        let round_id = tx.last_insert_rowid();
+        let payout = Self::calculate_payout(wager, odds)?;
+        tx.execute("INSERT INTO bets (player_id, market_id, round_id, game, amount, payout) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![player_id, market_id, round_id, game_name, wager, payout]
+        )?;
+        let bet_id = tx.last_insert_rowid();
+        let transact_type = format!("Wager for Game: /{}/ for a bet on /{}/", game_name, bet_on);
+        Self::transact(&tx, player_id, bet_id, -wager, &transact_type)?;
+        tx.commit()?;
+        Ok(())
+    } 
 
     pub fn payout_bet(&mut self, bet_id: i64) -> Result<(), Box<dyn std::error::Error>> {
         let tx = self.connection.transaction()?;
@@ -113,9 +132,9 @@ impl Database {
             payout,
             selection,
             _odds,
-            _round_status,
+            round_status,
             result,
-            game_name,
+            game_name
         ): (i64, i64, String, i64, String, f64, String, Option<String>, String) =
             tx.query_row(
                 "SELECT
@@ -149,7 +168,11 @@ impl Database {
                     ))
                 },
             )?;
-        
+
+        if round_status != "finished" {
+            return Err("Round is not over yet.".into())
+        }
+
         if result.is_none() {
             return Err("No result availible right now.".into());
         }
@@ -158,7 +181,8 @@ impl Database {
             return Err("Bet has already been settled".into());
         }
 
-        let win: bool = result.unwrap() == selection;
+        let result = result.ok_or("No result available")?;
+        let win = result == selection;
 
         if !win {
             tx.execute("UPDATE bets SET status = 'lost' WHERE id = ?1", [bet_id])?;
@@ -172,51 +196,22 @@ impl Database {
         Ok(())
     }
 
-    pub fn create_player(&self, name: &str) -> Result<i64> {
-        self.connection.execute(
-            "INSERT INTO players (username) VALUES (?1)",
-            [name],
+    pub fn play_game(&mut self, game_func: impl Fn() -> String + Send + Sync + 'static, round_id: i64) -> Result<(), Box<dyn std::error::Error>> {
+        let tx = self.connection.transaction()?;
+        let res = game_func();
+        
+        let updated = tx.execute(
+            "UPDATE rounds
+            SET status = 'finished', result = ?1
+            WHERE id = ?2 AND status = 'in_progress'",
+            params![res, round_id],
         )?;
 
-        Ok(self.connection.last_insert_rowid())
-    }
-
-    pub fn get_name(&self, id: i64) -> Result<String> {
-        self.connection.query_row(
-            "SELECT username FROM players WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-    }
-
-    pub fn get_money(&self, id: i64) -> Result<i64> {
-        self.connection.query_row(
-            "SELECT balance FROM players WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-    }
-
-    pub fn set_money(&self, id: i64, money: i64) -> Result<()> {
-        if money < 0 {
-            return Err(rusqlite::Error::InvalidParameterName(
-                "Balance cannot be negative".into(),
-            ));
+        if updated != 1 {
+            return Err("Round could not be finished".into());
         }
 
-        let changed = self.connection.execute(
-            "UPDATE players SET balance = ?1 WHERE id = ?2",
-            params![money, id],
-        )?;
-
-        if changed == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-
+        tx.commit()?;
         Ok(())
-    }
-
-    pub fn update_money(&self, id: i64, dif: i64) -> Result<()> {
-        self.set_money(id, self.get_money(id)? + dif)
     }
 }
