@@ -13,10 +13,14 @@ impl Database {
             PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS players (
-                id       INTEGER PRIMARY KEY,
-                username TEXT NOT NULL UNIQUE,
-                balance  INTEGER NOT NULL DEFAULT 10000
-                         CHECK (balance >= 0)
+                id           INTEGER PRIMARY KEY,
+                username     TEXT NOT NULL UNIQUE,
+                pwd_hash     TEXT NOT NULL,
+                latest_tok   CHAR(48) NOT NULL,
+                acc_creation TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                lt_creation  TEXT NOT NULL,
+                balance      INTEGER NOT NULL DEFAULT 10000
+                             CHECK (balance >= 0)
             );
 
             CREATE TABLE IF NOT EXISTS games (
@@ -99,7 +103,11 @@ impl Database {
         Ok(())
     }
 
-    pub fn place_bet(&mut self, player_id: i64, market_id: i64, wager: i64) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn get_round_id(&mut self, bet_id: i64) -> Result<i64, Box<dyn std::error::Error>> {
+        Ok(self.connection.query_row("SELECT round_id FROM bets WHERE id = ?1", params![bet_id], |row| { Ok(row.get(0)?) })?)
+    }
+
+    pub fn place_bet(&mut self, player_id: i64, market_id: i64, wager: i64) -> Result<i64, Box<dyn std::error::Error>> {
         if wager <= 0 {
             return Err("Wager must be positive".into());
         }
@@ -119,7 +127,7 @@ impl Database {
         let transact_type = format!("Wager for Game: /{}/ for a bet on /{}/", game_name, bet_on);
         Self::transact(&tx, player_id, bet_id, -wager, &transact_type)?;
         tx.commit()?;
-        Ok(())
+        Ok(bet_id)
     } 
 
     pub fn payout_bet(&mut self, bet_id: i64) -> Result<(), Box<dyn std::error::Error>> {
@@ -213,5 +221,21 @@ impl Database {
 
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn get_password_hash(&mut self, player_id: i64) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(self.connection.query_row("SELECT password_hash FROM players WHERE id = ?1", params![player_id], |row| { Ok(row.get(0)?) })?)
+    }
+
+    pub fn update_token(&mut self, player_id: i64, token: String) {
+        self.connection.execute("UPDATE players SET latest_tok = ?1, lt_creation = CURRENT_TIMESTAMP WHERE id = ?2", params![token, player_id]);
+    }
+
+    pub fn get_player_id_token(&mut self, token: String) -> Result<i64, Box<dyn std::error::Error>> {
+        Ok(self.connection.query_row("SELECT id FROM players WHERE latest_tok = ?1", params![token], |row| { Ok(row.get(0)?) })?)
+    }
+
+    pub fn get_player_id_username(&mut self, username: String) -> Result<i64, Box<dyn std::error::Error>> {
+        Ok(self.connection.query_row("SELECT id FROM players WHERE username = ?1", params![username], |row| { Ok(row.get(0)?) })?)
     }
 }
