@@ -114,7 +114,7 @@ impl Database {
 
         let tx = self.connection.transaction()?;
         let (game_id, bet_on, odds, game_name): (i64, String, f64, String) = tx.query_row(
-            "SELECT m.game_id, m.selection, m.odds, g.name FROM markets m JOIN games g ON m.game_id = g.id WHERE m.id = ?1 AND game.status = 'active'",
+            "SELECT m.game_id, m.selection, m.odds, g.name FROM markets m JOIN games g ON m.game_id = g.id WHERE m.id = ?1 AND g.status = 'active'",
             params![market_id], |row| { Ok(( row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)? )) }
         )?;
         tx.execute("INSERT INTO rounds (game_id) VALUES (?1)", params![game_id])?;
@@ -130,7 +130,7 @@ impl Database {
         Ok(bet_id)
     } 
 
-    pub fn payout_bet(&mut self, bet_id: i64) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn payout_bet(&mut self, bet_id: i64) -> Result<bool, Box<dyn std::error::Error>> {
         let tx = self.connection.transaction()?;
 
         let (
@@ -201,7 +201,7 @@ impl Database {
         }
 
         tx.commit()?;
-        Ok(())
+        Ok(win)
     }
 
     pub fn play_game(&mut self, game_func: impl Fn() -> String + Send + Sync + 'static, round_id: i64) -> Result<(), Box<dyn std::error::Error>> {
@@ -224,11 +224,12 @@ impl Database {
     }
 
     pub fn get_password_hash(&mut self, player_id: i64) -> Result<String, Box<dyn std::error::Error>> {
-        Ok(self.connection.query_row("SELECT password_hash FROM players WHERE id = ?1", params![player_id], |row| { Ok(row.get(0)?) })?)
+        Ok(self.connection.query_row("SELECT pwd_hash FROM players WHERE id = ?1", params![player_id], |row| { Ok(row.get(0)?) })?)
     }
 
-    pub fn update_token(&mut self, player_id: i64, token: String) {
-        self.connection.execute("UPDATE players SET latest_tok = ?1, lt_creation = CURRENT_TIMESTAMP WHERE id = ?2", params![token, player_id]);
+    pub fn update_token(&mut self, player_id: i64, token: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.connection.execute("UPDATE players SET latest_tok = ?1, lt_creation = CURRENT_TIMESTAMP WHERE id = ?2", params![token, player_id])?;
+        Ok(())
     }
 
     pub fn get_player_id_token(&mut self, token: String) -> Result<i64, Box<dyn std::error::Error>> {
@@ -237,5 +238,10 @@ impl Database {
 
     pub fn get_player_id_username(&mut self, username: String) -> Result<i64, Box<dyn std::error::Error>> {
         Ok(self.connection.query_row("SELECT id FROM players WHERE username = ?1", params![username], |row| { Ok(row.get(0)?) })?)
+    }
+
+    pub fn new_player(&mut self, username: String, password_hash: String, latest_token: String) -> Result<i64, Box<dyn std::error::Error>> {
+        self.connection.execute("INSERT INTO players (username, pwd_hash, latest_tok, lt_creation) VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)", params![username, password_hash, latest_token])?;
+        Ok(self.connection.last_insert_rowid())
     }
 }

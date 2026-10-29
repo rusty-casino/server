@@ -1,5 +1,3 @@
-use std::str::pattern::Pattern;
-
 use crate::database::Database;
 
 use argon2::{
@@ -19,10 +17,10 @@ fn generate_token() -> String {
         .collect()
 }
 
-fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+fn hash_password(password: &str) -> Result<String, Box<dyn std::error::Error>> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let password_hash = argon2.hash_password(password.as_bytes(), &salt)?;
+    let password_hash = argon2.hash_password(password.as_bytes(), &salt).map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
     Ok(password_hash.to_string())
 }
 
@@ -36,12 +34,20 @@ fn verify_password(password: &str, parsed_hash: &str) -> bool {
         .is_ok()
 }
 
-pub fn login(db: &mut Database, username: String, password: String) -> Result<String, Box<dyn std::error::Error>>{
+pub fn login(db: &mut Database, username: String, password: String) -> Result<String, Box<dyn std::error::Error>> {
     let player_id = db.get_player_id_username(username)?;
     let pwd_hash = db.get_password_hash(player_id)?;
     if !verify_password(&password, &pwd_hash) {
         return Err("Bad Details".into());
     }
     let tok = generate_token();
+    db.update_token(player_id, &tok)?;
     Ok(tok)
+}
+
+pub fn signup(db: &mut Database, username: String, password: String) -> Result<String, Box<dyn std::error::Error>> {
+    let pwd_hash = hash_password(&password)?;
+    let new_token = generate_token();
+    db.new_player(username, pwd_hash, new_token.clone())?;
+    Ok(new_token)
 }

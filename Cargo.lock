@@ -152,9 +152,9 @@ dependencies = [
 
 [[package]]
 name = "easy-api"
-version = "0.1.3"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2acd7636df576e6f2d10802a92091aecf11699d17aa33b4a409f684e92685591"
+checksum = "ce785211c770586db416aafa216e3bf2fda088c03f1fb5532937ba21212abb1e"
 dependencies = [
  "http-body-util",
  "hyper",
